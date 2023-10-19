@@ -1,12 +1,13 @@
 name: dart_elf
-description: A starting point for Dart libraries or applications.
 version: 1.0.0
-# repository: https://github.com/my_org/my_repo
+description: A pure Dart library for parsing ELF binaries.
+homepage: https://github.com/libdbm/dart-elf
+repository: https://github.com/libdbm/dart-elf
+issue_tracker: https://github.com/libdbm/dart-elf/issues
 
 environment:
   sdk: ^3.0.5
 
-# Add regular dependencies here.
 dependencies:
   args: ^2.4.2
   sprintf: ^7.0.0
