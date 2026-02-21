@@ -122,7 +122,7 @@ abstract class ElfIoBuffer {
       int byte = readByte();
       if (byte == -1) break;
       read += 1;
-      buffer[i] = readByte();
+      buffer[i] = byte;
     }
     return read;
   }

@@ -1,6 +1,6 @@
 name: dart_elf
-version: 1.0.0
-description: A pure Dart library for parsing ELF binaries.
+version: 1.0.2
+description: A pure Dart library for parsing ELF binaries. Useful for writing emulators etc.
 homepage: https://github.com/libdbm/dart-elf
 repository: https://github.com/libdbm/dart-elf
 issue_tracker: https://github.com/libdbm/dart-elf/issues

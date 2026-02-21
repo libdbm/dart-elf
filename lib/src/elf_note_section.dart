@@ -90,7 +90,7 @@ class ElfNoteSection extends ElfSection {
     int tid = buffer.readInt(meta.endian);
     String name = String.fromCharCodes(buffer.readBytes(namesz - 1));
     buffer.skip(1);
-    buffer.skip(namesz % 4);
+    buffer.skip((4 - (namesz % 4)) % 4);
     return (
       namesz: namesz,
       descsz: descsz,

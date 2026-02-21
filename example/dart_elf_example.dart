@@ -6,21 +6,17 @@ import 'package:sprintf/sprintf.dart';
 
 void main(List<String> arguments) {
   final parser = ArgParser()
-    ..addFlag("all", abbr: "a",
-        help: "Dump all information",
-        defaultsTo: true)..addFlag(
-        "file-header", abbr: "h", help: "Dump the file header")..addFlag(
-        "program-headers",
-        abbr: "l",
-        help: "Dump the program headers",
-        aliases: ['segments'])..addFlag("section-headers",
-        abbr: "S",
-        help: "Dump the section headers",
-        aliases: ['sections'])..addFlag("symbols",
-        abbr: "s", help: "Dump the symbol table", aliases: ['syms'])..addFlag(
-        "notes", abbr: "n", help: "Dump notes", aliases: [])..addFlag(
-        "help", abbr: "H", help: "Display this information")..addFlag(
-        "version", abbr: "v", help: "Display the version number")
+    ..addFlag("all", abbr: "a", help: "Dump all information", defaultsTo: true)
+    ..addFlag("file-header", abbr: "h", help: "Dump the file header")
+    ..addFlag("program-headers",
+        abbr: "l", help: "Dump the program headers", aliases: ['segments'])
+    ..addFlag("section-headers",
+        abbr: "S", help: "Dump the section headers", aliases: ['sections'])
+    ..addFlag("symbols",
+        abbr: "s", help: "Dump the symbol table", aliases: ['syms'])
+    ..addFlag("notes", abbr: "n", help: "Dump notes", aliases: [])
+    ..addFlag("help", abbr: "H", help: "Display this information")
+    ..addFlag("version", abbr: "v", help: "Display the version number")
     ..addOption('file', help: 'ELF file to parser', mandatory: true);
   ArgResults args = parser.parse(arguments);
   if (!args.wasParsed('file') || args['help']) {
@@ -91,16 +87,14 @@ void _printNotes(ElfReader reader, ElfNoteSection section) {
           sprintf('    OS: %s, ABI: %d.%d.%d', [os, d.major, d.minor, d.sub]));
       break;
     case ElfNoteType.gnuBuildId:
-      print('    Build ID: ${section
-          .readGnuBuildId()
-          .text}');
+      print('    Build ID: ${section.readGnuBuildId().text}');
       break;
     case ElfNoteType.gnuProperties:
-    // TODO: Dump the actual properties
+      // TODO: Dump the actual properties
       print('    Properties: ${section.readHexString()}');
       break;
     case ElfNoteType.gnuHwcap:
-    // TODO: Dump the hardware capabilities
+      // TODO: Dump the hardware capabilities
       print('    Hardware Cap: ${section.readHexString()}');
       break;
     default:
@@ -114,20 +108,20 @@ void _printSymbolTable(ElfReader reader, ElfSymbolTableSection section) {
   print(sprintf('Symbol table \'%s\' contains %d entries:',
       [section.name, section.symbols.length]));
 
-  print('   Num:    Value  Size Type         Bind    Vis      Ndx Name');
+  print('   Num:    Value  Size Type         Bind    Vis         Ndx  Name');
   ElfStringTable stringTable = section.name == '.dynsym'
       ? reader.dynamicStringTable!
       : reader.stringTable!;
   for (var i = 0; i < section.symbols.length; i++) {
     var symbol = section.symbols[i];
-    print(sprintf('%6d: %08x %5d %-12.12s %-7.7s %-8.8s %3.3s %s', [
+    print(sprintf('%6d: %08x %5d %-12.12s %-7.7s %-8.8s %6d     %s', [
       i,
       symbol.value,
       symbol.size,
       symbol.type.name,
       symbol.binding.name,
       symbol.visibility.name,
-      '???',
+      symbol.shndx,
       stringTable.at(symbol.nindex),
     ]));
   }
@@ -188,9 +182,7 @@ void _printDynamicSections(ElfReader reader) {
       print('  Tag           Type              Name/Value');
       for (ElfDynamicEntry entry in section.entries) {
         int tag = entry.tag;
-        String name = ElfDynamicTag
-            .byId(entry.tag)
-            .name;
+        String name = ElfDynamicTag.byId(entry.tag).name;
         String value = '0x${entry.value.toRadixString(16)}';
         if (tag == ElfDynamicTag.needed.id) {
           var name = stringTable?.at(entry.value) ?? '(missing strtab)';

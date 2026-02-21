@@ -173,10 +173,10 @@ enum ElfAbiIdentifier {
   solaris(0x06, 'ELFOSABI_SOLARIS', 'Solaris'),
   aix(0x07, 'ELFOSABI_AIX', 'AIX (Monterey)'),
   irix(0x08, 'ELFOSABI_IRIX', 'IRIX'),
-  freebsd(0x09, 'ELFOSABI_IRIX', 'FreeBSD'),
+  freebsd(0x09, 'ELFOSABI_FREEBSD', 'FreeBSD'),
   tru64(0x0a, 'ELFOSABI_TRU64', 'Tru64'),
   modesto(0x0b, 'ELFOSABI_MODESTO', 'Novell Modesto'),
-  openbsd(0x0c, 'ELFOSABI_OPENVMS', 'OpenBSD'),
+  openbsd(0x0c, 'ELFOSABI_OPENBSD', 'OpenBSD'),
   openvms(0x0d, 'ELFOSABI_OPENVMS', 'OpenVMS'),
   nonstop(0x0e, 'ELFOSABI_NSK', 'NonStop Kernel'),
   aros(0x0f, 'ELFOSABI_AROS', 'AROS'),
@@ -240,7 +240,7 @@ enum ElfSegmentType {
   gnuRelRO(0x6474e552, null, 'PT_GNU_RELRO', 'Read-only after relocation'),
   gnuProperty(0x6474e553, null, 'PT_GNU_PROPERTY', 'GNU property'),
   sunSegment(0x6ffffffa, null, 'PT_SUNWBSS', 'Sun specific segment'),
-  sunStack(0x6ffffffa, null, 'PT_SUNWSTACK', 'Sun stack segment'),
+  sunStack(0x6ffffffb, null, 'PT_SUNWSTACK', 'Sun stack segment'),
   os(0x60000000, null, 'PT_LOOS', 'OS specific'),
   processor(0x70000000, null, 'PT_LOPROC', 'Processor specific'),
 
@@ -421,7 +421,7 @@ enum ElfSectionType {
 /// An enum containing word sizes
 enum ElfWordSize {
   word32Bit('ELF32', '32 bit ELF'),
-  word64Bit('ELF64', '364 bit ELF');
+  word64Bit('ELF64', '64 bit ELF');
 
   final String id;
   final String description;
@@ -793,7 +793,7 @@ enum ElfDynamicFlags {
   pie1(0x08000000, 'DF_1_PIE', ''),
   origin(0x1, 'DF_ORIGIN', ''),
   symbolic(0x2, 'DF_SYMBOLIC', ''),
-  textrel(0x3, 'DF_TEXTREL', ''),
+  textrel(0x4, 'DF_TEXTREL', ''),
   bindnow(0x8, 'DF_BIND_NOW', '');
 
   final int id;

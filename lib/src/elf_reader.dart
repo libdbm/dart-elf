@@ -46,7 +46,9 @@ class ElfReader {
   ElfReader.fromIoBuffer(ElfIoBuffer buffer)
       : _buffer = buffer,
         _header = _parseHeader(buffer) {
-    _sectionNames = _loadSectionNameStringTable();
+    if (_header.shnum > 0) {
+      _sectionNames = _loadSectionNameStringTable();
+    }
     _sections = _parseSections();
     _segments = _parseSegments();
   }
@@ -66,7 +68,7 @@ class ElfReader {
       int end = segment.header.vaddr + segment.header.msize;
       if (address >= start && address < end) {
         int offset = address - start;
-        if (offset <= segment.header.fsize) {
+        if (offset < segment.header.fsize) {
           return offset + segment.header.offset;
         }
       }
@@ -275,7 +277,8 @@ class ElfReader {
     int shstrndx = _readShort(
         buffer, wordSize == ElfWordSize.word32Bit ? 0x32 : 0x3E, endian);
     if (shstrndx == 0xffff) {
-      throw StateError('Invalid ELF file. shstrndx == 0xffff');
+      throw UnsupportedError(
+          'SHN_XINDEX extended section numbering is not supported');
     }
     buffer.seek(0, absolute: true);
     return (

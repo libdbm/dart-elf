@@ -169,4 +169,73 @@ void main() {
       expect(reader.sections[4].name, equals('.note.ABI-tag'));
     });
   });
+
+  group('Bug fixes', () {
+    test('Symbol binding is parsed correctly', () {
+      final reader = ElfReader.fromBytes(
+          File('test/data/64_intel_yes').readAsBytesSync());
+      final symbols = reader.dynamicSymbolTableSection!.symbols;
+      final global = symbols.where(
+          (final s) => s.binding == ElfSymbolBinding.global);
+      expect(global, isNotEmpty);
+    });
+
+    test('readInto reads consecutive bytes without skipping', () {
+      final bytes = Uint8List.fromList([0x7f, 0x45, 0x4c, 0x46]);
+      final buffer = ElfInMemoryBuffer.fromBytes(bytes);
+      final dest = Uint8List(4);
+      final count = buffer.readInto(dest);
+      expect(count, equals(4));
+      expect(dest, equals(bytes));
+    });
+
+    test('String table handles EOF without infinite loop', () {
+      final bytes = Uint8List.fromList([0x41, 0x42, 0x43]);
+      final buffer = ElfInMemoryBuffer.fromBytes(bytes);
+      final table = ElfStringTable(buffer, 0, 3);
+      final result = table.at(0);
+      expect(result, equals('ABC'));
+    });
+
+    test('sunSegment and sunStack have distinct values', () {
+      expect(ElfSegmentType.sunSegment.id,
+          isNot(equals(ElfSegmentType.sunStack.id)));
+    });
+
+    test('textrel has value 0x4', () {
+      expect(ElfDynamicFlags.textrel.id, equals(0x4));
+    });
+
+    test('FreeBSD ABI name is correct', () {
+      expect(ElfAbiIdentifier.freebsd.name, equals('ELFOSABI_FREEBSD'));
+    });
+
+    test('OpenBSD ABI name is correct', () {
+      expect(ElfAbiIdentifier.openbsd.name, equals('ELFOSABI_OPENBSD'));
+    });
+
+    test('64-bit word size description is correct', () {
+      expect(ElfWordSize.word64Bit.description, equals('64 bit ELF'));
+    });
+
+    test('Note sections parse correctly', () {
+      final reader = ElfReader.fromBytes(
+          File('test/data/64_intel_yes').readAsBytesSync());
+      final notes = reader.sections
+          .whereType<ElfNoteSection>()
+          .toList();
+      expect(notes, isNotEmpty);
+      for (final note in notes) {
+        expect(note.noteName, isNotEmpty);
+      }
+    });
+
+    test('RISC-V file with shnum==0 loads without error', () {
+      final reader = ElfReader.fromBytes(
+          File('test/data/64_riscv_selfie').readAsBytesSync());
+      expect(reader.header.shnum, equals(0));
+      expect(reader.sections, isEmpty);
+      expect(reader.segments, isNotEmpty);
+    });
+  });
 }

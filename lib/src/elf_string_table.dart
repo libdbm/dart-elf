@@ -16,10 +16,8 @@ class ElfStringTable {
     _buffer.seek(offset + off, absolute: true);
     List<int> bytes = [];
     int byte = _buffer.readByte();
-    while (byte != 0) {
-      if (byte != 0) {
-        bytes.add(byte);
-      }
+    while (byte != 0 && byte != -1) {
+      bytes.add(byte);
       byte = _buffer.readByte();
     }
     return String.fromCharCodes(bytes);

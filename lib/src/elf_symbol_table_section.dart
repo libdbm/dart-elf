@@ -37,7 +37,7 @@ class ElfSymbolTableSection extends ElfSection {
     }
     return (
       type: ElfSymbolType.byId(info & 0x0f),
-      binding: ElfSymbolBinding.byId((info & 0xf) >>> 4),
+      binding: ElfSymbolBinding.byId((info >>> 4) & 0xf),
       visibility: ElfSymbolVisibility.byId(other & 0x3),
       nindex: nindex,
       value: value,
