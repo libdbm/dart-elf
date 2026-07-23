@@ -9,9 +9,11 @@ import '../dart_elf.dart';
 class ElfReader {
   final ElfIoBuffer _buffer;
   final ElfFileHeader _header;
-  late ElfStringTableSection _sectionNames;
-  late List<ElfSection> _sections;
-  late List<ElfSegment> _segments;
+  late final int _shnum;
+  late final int _shstrndx;
+  late final ElfStringTableSection? _sectionNames;
+  late final List<ElfSection> _sections;
+  late final List<ElfSegment> _segments;
 
   /// The backing buffer holding the raw ELF file
   ElfIoBuffer get buffer => _buffer;
@@ -20,10 +22,10 @@ class ElfReader {
   ElfFileHeader get header => _header;
 
   /// The list of segments in the ELF file
-  List<ElfSegment> get segments => _segments;
+  List<ElfSegment> get segments => List.unmodifiable(_segments);
 
   /// The list of sections in the ELF file
-  List<ElfSection> get sections => _sections;
+  List<ElfSection> get sections => List.unmodifiable(_sections);
 
   /// Get the symbol table section if it exists
   ElfSymbolTableSection? get symbolTableSection => _getSymbolTableSection();
@@ -46,9 +48,16 @@ class ElfReader {
   ElfReader.fromIoBuffer(ElfIoBuffer buffer)
       : _buffer = buffer,
         _header = _parseHeader(buffer) {
-    if (_header.shnum > 0) {
-      _sectionNames = _loadSectionNameStringTable();
-    }
+    // Section header zero carries the real section count and name table index
+    // when the ELF header cannot hold them. It is only present when there is a
+    // section table at all.
+    final ElfSectionHeader? first =
+        _header.shoff != 0 ? _parseSectionHeader(_header.shoff) : null;
+    _shnum = _resolveCount(first);
+    _shstrndx = _resolveIndex(first);
+    _validateSectionTable();
+    _sectionNames =
+        _shstrndx == SHN_UNDEF ? null : _loadSectionNameStringTable();
     _sections = _parseSections();
     _segments = _parseSegments();
   }
@@ -57,9 +66,25 @@ class ElfReader {
   ElfReader.fromBytes(Uint8List bytes)
       : this.fromIoBuffer(ElfInMemoryBuffer.fromBytes(bytes));
 
-  /// Create an ELF parser from a File.
+  /// Create an ELF parser from an open file.
+  ///
+  /// The caller keeps ownership of [file] and remains responsible for closing
+  /// it. Use [ElfReader.fromFile] to have the reader own the handle instead.
   ElfReader.fromRandomAccessFile(RandomAccessFile file)
       : this.fromIoBuffer(ElfRandomFileBuffer.fromRandomAccessFile(file));
+
+  /// Create an ELF parser that owns the handle it opens for [file].
+  ///
+  /// Call [close] when finished, or the descriptor leaks.
+  ElfReader.fromFile(File file) : this.fromRandomAccessFile(file.openSync());
+
+  /// Release the backing buffer's resources
+  ///
+  /// Only meaningful for readers that own a file handle. Reading after a close
+  /// is not supported.
+  void close() {
+    _buffer.close();
+  }
 
   /// Helper function to convert [address] to a file offset based on segments
   int toFileOffset(int address) {
@@ -73,11 +98,80 @@ class ElfReader {
         }
       }
     }
-    throw StateError('Invalid ELF file. Unable to map address to file');
+    throw ElfFormatException('Invalid ELF file. Unable to map address to file');
+  }
+
+  /// Resolve the section count from [first], section header zero.
+  ///
+  /// A count of zero in the ELF header means either that there are no sections
+  /// at all, or that the real count did not fit and lives in section header
+  /// zero. The presence of a section table tells the two apart.
+  int _resolveCount(final ElfSectionHeader? first) {
+    if (_header.shnum != 0) return _header.shnum;
+    if (first == null) return 0;
+    return first.size;
+  }
+
+  /// Resolve the section name table index from [first], section header zero.
+  ///
+  /// An index of SHN_XINDEX means the real index did not fit in the ELF header
+  /// and lives in the link field of section header zero.
+  int _resolveIndex(final ElfSectionHeader? first) {
+    if (_header.shstrndx != SHN_XINDEX) return _header.shstrndx;
+    if (first == null) {
+      throw ElfFormatException(
+          'Section name index is SHN_XINDEX but the file has no section table');
+    }
+    return first.link;
+  }
+
+  /// Verify that the resolved section table is present and fits in the file
+  void _validateSectionTable() {
+    if (_shnum == 0) {
+      if (_shstrndx != SHN_UNDEF) {
+        throw ElfFormatException(
+            'Section name index $_shstrndx but the file has no sections');
+      }
+      return;
+    }
+    final int minimum =
+        _header.word == ElfWordSize.word32Bit ? SHENTSIZE32 : SHENTSIZE64;
+    if (_header.shentsize < minimum) {
+      throw ElfFormatException(
+          'Section header size ${_header.shentsize} is below the minimum $minimum');
+    }
+    final int end = _header.shoff + (_shnum * _header.shentsize);
+    if (end > _buffer.size) {
+      throw ElfFormatException(
+          'Section table of $_shnum entries overruns the file (size ${_buffer.size})',
+          offset: _header.shoff);
+    }
+    if (_shstrndx >= _shnum) {
+      throw ElfFormatException(
+          'Section name index $_shstrndx is outside the $_shnum section headers');
+    }
+  }
+
+  /// Verify that section [i] lies within the file
+  ///
+  /// SHT_NOBITS occupies no file space and SHT_NULL is inactive, so neither
+  /// has a payload to bound.
+  void _validateSection(
+      final int i, final ElfSectionHeader head, final ElfSectionType type) {
+    if (type == ElfSectionType.nobits || type == ElfSectionType.none) return;
+    if (head.offset < 0 || head.size < 0) {
+      throw ElfFormatException('Section $i has a negative offset or size',
+          offset: head.offset);
+    }
+    if (head.offset + head.size > _buffer.size) {
+      throw ElfFormatException(
+          'Section $i of ${head.size} bytes overruns the file (size ${_buffer.size})',
+          offset: head.offset);
+    }
   }
 
   ElfStringTableSection _loadSectionNameStringTable() {
-    final int offset = _header.shoff + (_header.shstrndx * _header.shentsize);
+    final int offset = _header.shoff + (_shstrndx * _header.shentsize);
     ElfSectionHeader section = _parseSectionHeader(offset);
     return ElfStringTableSection(_header, section, 'segment names', _buffer);
   }
@@ -94,12 +188,13 @@ class ElfReader {
 
   List<ElfSection> _parseSections() {
     List<ElfSection> ret = [];
-    for (int i = 0; i < _header.shnum; i++) {
+    for (int i = 0; i < _shnum; i++) {
       final int offset = _header.shoff + (i * _header.shentsize);
       ElfSectionHeader head = _parseSectionHeader(offset);
       ElfSectionType type =
           ElfSectionType.byArchitecture(_header.arch, head.type);
-      String name = _sectionNames.table.at(head.nindex);
+      _validateSection(i, head, type);
+      String name = _sectionNames?.table.at(head.nindex) ?? '';
       switch (type) {
         case ElfSectionType.none:
           ret.add(ElfSection(_header, head, name, _buffer));
@@ -137,28 +232,18 @@ class ElfReader {
         case ElfSectionType.gnuHash:
           ret.add(ElfGnuHashTableSection(_header, head, name, _buffer));
           break;
+        // The section type alone decides the class. Gating on the canonical
+        // name as well would leave vendor variants as plain sections that the
+        // type based accessors would then fail to cast.
         case ElfSectionType.gnuVerSym:
-          if (name == '.gnu.version') {
-            ret.add(
-                ElfGnuVersionSymbolTableSection(_header, head, name, _buffer));
-          } else {
-            ret.add(ElfSection(_header, head, name, _buffer));
-          }
+          ret.add(
+              ElfGnuVersionSymbolTableSection(_header, head, name, _buffer));
           break;
         case ElfSectionType.gnuVerDef:
-          if (name == '.gnu.version_d') {
-            ret.add(
-                ElfGnuVersionDefinitionSection(_header, head, name, _buffer));
-          } else {
-            ret.add(ElfSection(_header, head, name, _buffer));
-          }
+          ret.add(ElfGnuVersionDefinitionSection(_header, head, name, _buffer));
           break;
         case ElfSectionType.gnuVerNeed:
-          if (name == '.gnu.version_r') {
-            ret.add(ElfGnuVersionNeededSection(_header, head, name, _buffer));
-          } else {
-            ret.add(ElfSection(_header, head, name, _buffer));
-          }
+          ret.add(ElfGnuVersionNeededSection(_header, head, name, _buffer));
           break;
         // TODO: handle these specific types
         case ElfSectionType.shlib:
@@ -241,13 +326,13 @@ class ElfReader {
         buffer[EI_MAG1] != ELFMAG1 ||
         buffer[EI_MAG2] != ELFMAG2 ||
         buffer[EI_MAG3] != ELFMAG3) {
-      throw StateError('Invalid ELF file. Missing magic number');
+      throw ElfFormatException('Invalid ELF file. Missing magic number');
     }
 
     // Validate the version
     int version = buffer[EI_VERSION];
     if (version != EV_CURRENT) {
-      throw StateError('Invalid ELF file. Bad version: $version');
+      throw ElfFormatException('Invalid ELF file. Bad version: $version');
     }
 
     ElfWordSize wordSize = _parseWordSize(buffer);
@@ -271,15 +356,11 @@ class ElfReader {
         buffer, wordSize == ElfWordSize.word32Bit ? 0x2E : 0x3A, endian);
     int shnum = _readShort(
         buffer, wordSize == ElfWordSize.word32Bit ? 0x30 : 0x3C, endian);
-    if (phnum == 0 && shnum == 0) {
-      throw StateError('Invalid ELF file. No program or section headers.');
-    }
     int shstrndx = _readShort(
         buffer, wordSize == ElfWordSize.word32Bit ? 0x32 : 0x3E, endian);
-    if (shstrndx == 0xffff) {
-      throw UnsupportedError(
-          'SHN_XINDEX extended section numbering is not supported');
-    }
+
+    _validateHeader(buffer, wordSize, ehsize, phoff, phentsize, phnum);
+
     buffer.seek(0, absolute: true);
     return (
       data: buffer.readBytes(wordSize == ElfWordSize.word32Bit ? 52 : 64),
@@ -303,115 +384,138 @@ class ElfReader {
     );
   }
 
-  static int _readInt(buffer, offset, endian) {
+  /// Verify the ELF header's self-reported sizes and that the program header
+  /// table it describes fits within the file.
+  ///
+  /// The section header table is validated separately, after extended
+  /// numbering has been resolved.
+  static void _validateHeader(final ElfIoBuffer buffer, final ElfWordSize word,
+      final int ehsize, final int phoff, final int phentsize, final int phnum) {
+    final bool small = word == ElfWordSize.word32Bit;
+    final int minimum = small ? EHSIZE32 : EHSIZE64;
+    if (ehsize < minimum) {
+      throw ElfFormatException(
+          'ELF header size $ehsize is below the minimum $minimum');
+    }
+    if (phnum == 0) return;
+    final int entry = small ? PHENTSIZE32 : PHENTSIZE64;
+    if (phentsize < entry) {
+      throw ElfFormatException(
+          'Program header size $phentsize is below the minimum $entry');
+    }
+    if (phoff + (phnum * phentsize) > buffer.size) {
+      throw ElfFormatException(
+          'Program table of $phnum entries overruns the file (size ${buffer.size})',
+          offset: phoff);
+    }
+  }
+
+  static int _readInt(ElfIoBuffer buffer, int offset, Endian endian) {
     buffer.seek(offset);
     return buffer.readInt(endian);
   }
 
-  static int _readShort(buffer, offset, endian) {
+  static int _readShort(ElfIoBuffer buffer, int offset, Endian endian) {
     buffer.seek(offset);
     return buffer.readShort(endian);
   }
 
-  static int _readLong(buffer, offset, endian) {
+  static int _readLong(ElfIoBuffer buffer, int offset, Endian endian) {
     buffer.seek(offset);
     return buffer.readLong(endian);
   }
 
-  static int _parseEntryPoint(bytes, endian, wordSize) {
+  static int _parseEntryPoint(
+      ElfIoBuffer bytes, Endian endian, ElfWordSize wordSize) {
     return wordSize == ElfWordSize.word32Bit
         ? _readInt(bytes, EI_ENTRY, endian)
         : _readLong(bytes, EI_ENTRY, endian);
   }
 
-  static int _parseProgramHeaderOffset(bytes, endian, wordSize) {
+  static int _parseProgramHeaderOffset(
+      ElfIoBuffer bytes, Endian endian, ElfWordSize wordSize) {
     int offset = wordSize == ElfWordSize.word32Bit ? 0x1C : 0x20;
     return wordSize == ElfWordSize.word32Bit
         ? _readInt(bytes, offset, endian)
         : _readLong(bytes, offset, endian);
   }
 
-  static int _parseSectionHeaderOffset(bytes, endian, wordSize) {
+  static int _parseSectionHeaderOffset(
+      ElfIoBuffer bytes, Endian endian, ElfWordSize wordSize) {
     int offset = wordSize == ElfWordSize.word32Bit ? 0x20 : 0x28;
     return wordSize == ElfWordSize.word32Bit
         ? _readInt(bytes, offset, endian)
         : _readLong(bytes, offset, endian);
   }
 
-  static ElfWordSize _parseWordSize(buffer) {
+  static ElfWordSize _parseWordSize(ElfIoBuffer buffer) {
     // Validate the word size
     int flag = buffer[EI_CLASS];
     if (flag != ELFCLASS32 && flag != ELFCLASS64) {
-      throw StateError('Invalid ELF file. Bad size: $flag');
+      throw ElfFormatException('Invalid ELF file. Bad size: $flag');
     }
     return flag == ELFCLASS32 ? ElfWordSize.word32Bit : ElfWordSize.word64Bit;
   }
 
-  static Endian _parseEndian(buffer) {
+  static Endian _parseEndian(ElfIoBuffer buffer) {
     // Validate the endian flag
     int flag = buffer[EI_DATA];
     if (flag != ELFDATA2LSB && flag != ELFDATA2MSB) {
-      throw StateError('Invalid ELF file. Bad endian flag: $flag');
+      throw ElfFormatException('Invalid ELF file. Bad endian flag: $flag');
     }
     return flag == ELFDATA2LSB ? Endian.little : Endian.big;
   }
 
-  static ElfFileType _parseFileType(buffer, endian) {
+  static ElfFileType _parseFileType(ElfIoBuffer buffer, Endian endian) {
     int type = _readShort(buffer, EI_FILE_TYPE, endian);
     return ElfFileType.byId(type);
   }
 
-  static ElfArchitectureIdentifier _parseArchitectureType(buffer, endian) {
+  static ElfArchitectureIdentifier _parseArchitectureType(
+      ElfIoBuffer buffer, Endian endian) {
     int type = _readShort(buffer, EI_ARCH_TYPE, endian);
     return ElfArchitectureIdentifier.byId(type);
   }
 
-  static ElfAbiIdentifier _parseAbi(buffer) {
+  static ElfAbiIdentifier _parseAbi(ElfIoBuffer buffer) {
     return ElfAbiIdentifier.byId(buffer[EI_OSABI]);
   }
 
+  // These accessors select on runtime type rather than casting on a type id
+  // or a section name. Both of those come from the file and can disagree with
+  // the class the section was actually built as.
+
   ElfSymbolTableSection? _getSymbolTableSection() {
-    for (var section in sections) {
-      if (section.type.id == ElfSectionType.symtab.id) {
-        return section as ElfSymbolTableSection;
-      }
-    }
-    return null;
+    return _sections
+        .whereType<ElfSymbolTableSection>()
+        .where((final section) => section.type.id == ElfSectionType.symtab.id)
+        .firstOrNull;
   }
 
   ElfSymbolTableSection? _getDynamicSymbolTableSection() {
-    for (var section in sections) {
-      if (section.type.id == ElfSectionType.dynsym.id) {
-        return section as ElfSymbolTableSection;
-      }
-    }
-    return null;
+    return _sections
+        .whereType<ElfSymbolTableSection>()
+        .where((final section) => section.type.id == ElfSectionType.dynsym.id)
+        .firstOrNull;
   }
 
   ElfStringTable? _getStringTable() {
-    for (var section in sections) {
-      if (section.name == '.strtab') {
-        return (section as ElfStringTableSection).table;
-      }
-    }
-    return null;
+    return _sections
+        .whereType<ElfStringTableSection>()
+        .where((final section) => section.name == '.strtab')
+        .firstOrNull
+        ?.table;
   }
 
   ElfStringTable? _getDynamicStringTable() {
-    for (var section in sections) {
-      if (section.name == '.dynstr') {
-        return (section as ElfStringTableSection).table;
-      }
-    }
-    return null;
+    return _sections
+        .whereType<ElfStringTableSection>()
+        .where((final section) => section.name == '.dynstr')
+        .firstOrNull
+        ?.table;
   }
 
   ElfGnuVersionSymbolTableSection? _getVersionSymbolTableSection() {
-    for (var section in sections) {
-      if (section.type == ElfSectionType.gnuVerSym) {
-        return section as ElfGnuVersionSymbolTableSection;
-      }
-    }
-    return null;
+    return _sections.whereType<ElfGnuVersionSymbolTableSection>().firstOrNull;
   }
 }

@@ -1,7 +1,11 @@
 /// Constants and types related to parsing an ELF binary
+library;
+
 // ignore_for_file: constant_identifier_names
 
 import 'dart:typed_data';
+
+import 'elf_format_exception.dart';
 
 // Offsets into the identification header.
 const EI_MAG0 = 0x0;
@@ -28,6 +32,18 @@ const ELFCLASS64 = 2;
 const ELFDATA2LSB = 1;
 const ELFDATA2MSB = 2;
 const EV_CURRENT = 1;
+
+// Special section indexes.
+const SHN_UNDEF = 0;
+const SHN_XINDEX = 0xffff;
+
+// Minimum sizes, in bytes, of the ELF header and the table entries it describes.
+const EHSIZE32 = 52;
+const EHSIZE64 = 64;
+const PHENTSIZE32 = 32;
+const PHENTSIZE64 = 56;
+const SHENTSIZE32 = 40;
+const SHENTSIZE64 = 64;
 
 /// ELF file header record
 typedef ElfFileHeader = ({
@@ -111,6 +127,18 @@ typedef ElfDynamicEntry = ({
   int value,
 });
 
+/// ELF note record
+///
+/// A single note within a note section. [descoff] is the file offset of the
+/// descriptor, which is read on demand rather than eagerly.
+typedef ElfNote = ({
+  int namesz,
+  int descsz,
+  int tid,
+  String name,
+  int descoff,
+});
+
 /// ELF GNU Build Id record
 typedef ElfGnuBuildId = ({
   Uint8List raw,
@@ -143,11 +171,16 @@ enum ElfArchitectureIdentifier {
   i860(0x7, 'EM_860', 'Intel i1860'),
   mips(0x8, 'EM_MIPS', 'MIPS'),
   arm(0x28, 'EM_ARM', 'Arm (Armv7/AArch32)'),
-  ia64(0x3e, 'EM_IA_64', 'Advanced Micro Devices X86-64'),
+  itanium(0x32, 'EM_IA_64', 'Intel Itanium (IA-64)'),
+  x8664(0x3e, 'EM_X86_64', 'Advanced Micro Devices X86-64'),
   aarch64(0xb7, 'EM_AARCH64', 'Arm 64-bits (Armv8/AArch64)'),
   riscv(0xf3, 'EM_RISCV', 'RISC-V'),
   bpf(0xf7, 'EM_BPF', 'Berkeley Packet Filter'),
   wdc(0x101, 'EM_WDC', 'WDC 65C816');
+
+  /// Machine 0x3e is x86-64, which this enum previously named after IA-64.
+  @Deprecated('Use x8664. Machine 0x3e is x86-64, not IA-64')
+  static const ElfArchitectureIdentifier ia64 = x8664;
 
   final int id;
   final String name;
@@ -157,9 +190,11 @@ enum ElfArchitectureIdentifier {
 
   /// Finds an architecture given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfArchitectureIdentifier byId(int id) {
-    return ElfArchitectureIdentifier.values.firstWhere((x) => x.id == id);
+    return ElfArchitectureIdentifier.values.firstWhere((x) => x.id == id,
+        orElse: () =>
+            throw ElfFormatException('Unknown architecture identifier $id'));
   }
 }
 
@@ -192,9 +227,10 @@ enum ElfAbiIdentifier {
 
   /// Finds an identifier given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfAbiIdentifier byId(int id) {
-    return ElfAbiIdentifier.values.firstWhere((x) => x.id == id);
+    return ElfAbiIdentifier.values.firstWhere((x) => x.id == id,
+        orElse: () => throw ElfFormatException('Unknown ABI identifier $id'));
   }
 }
 
@@ -216,11 +252,12 @@ enum ElfFileType {
 
   /// Finds a file type given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfFileType byId(int id) {
     if (id >= 0xfe00 && id <= 0xfeff) return ElfFileType.os;
     if (id >= 0xff00 && id <= 0xffff) return ElfFileType.processor;
-    return ElfFileType.values.firstWhere((x) => x.id == id);
+    return ElfFileType.values.firstWhere((x) => x.id == id,
+        orElse: () => throw ElfFormatException('Unknown file type $id'));
   }
 }
 
@@ -265,7 +302,7 @@ enum ElfSegmentType {
 
   /// Finds a segment type given an [arch] and an [id].
   ///
-  /// Throws a [StateError] if the segment type could not be found.
+  /// Throws an [ElfFormatException] if the segment type could not be found.
   static ElfSegmentType byArchitecture(ElfArchitectureIdentifier arch, int id) {
     for (ElfSegmentType type in ElfSegmentType.values) {
       if (type.id == id && type.arch == arch) return type;
@@ -275,14 +312,14 @@ enum ElfSegmentType {
 
   /// Finds a segment type given an [id].
   ///
-  /// Throws a [StateError] if the segment type could not be found.
+  /// Throws an [ElfFormatException] if the segment type could not be found.
   static ElfSegmentType byId(int id) {
     for (ElfSegmentType type in ElfSegmentType.values) {
       if (type.id == id) return type;
     }
     if (id >= 0x60000000 && id <= 0x6fffffff) return ElfSegmentType.os;
     if (id >= 0x70000000 && id <= 0x7fffffff) return ElfSegmentType.processor;
-    throw StateError('Unknown segment type $id');
+    throw ElfFormatException('Unknown segment type $id');
   }
 }
 
@@ -315,9 +352,11 @@ enum ElfSegmentPermissions {
 
   /// Finds a permission given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfSegmentPermissions byId(int id) {
-    return ElfSegmentPermissions.values.firstWhere((x) => x.id == id);
+    return ElfSegmentPermissions.values.firstWhere((x) => x.id == id,
+        orElse: () =>
+            throw ElfFormatException('Unknown segment permission $id'));
   }
 }
 
@@ -396,7 +435,7 @@ enum ElfSectionType {
 
   /// Finds a section type given [arch] and an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfSectionType byArchitecture(ElfArchitectureIdentifier arch, int id) {
     for (ElfSectionType type in ElfSectionType.values) {
       if (type.id == id && type.arch == arch) return type;
@@ -406,7 +445,7 @@ enum ElfSectionType {
 
   /// Finds a section type given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfSectionType byId(int id) {
     for (ElfSectionType type in ElfSectionType.values) {
       if (type.id == id) return type;
@@ -414,7 +453,7 @@ enum ElfSectionType {
     if (id >= 0x60000000 && id <= 0x6fffffff) return ElfSectionType.os;
     if (id >= 0x70000000 && id <= 0x7fffffff) return ElfSectionType.processor;
     if (id >= 0x80000000 && id <= 0xffffffff) return ElfSectionType.user;
-    throw StateError('Unknown section header type $id');
+    throw ElfFormatException('Unknown section header type $id');
   }
 }
 
@@ -445,10 +484,11 @@ enum ElfSymbolBinding {
 
   /// Finds a section type given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfSymbolBinding byId(int id) {
     if (id >= 13) return ElfSymbolBinding.loproc;
-    return ElfSymbolBinding.values.firstWhere((x) => x.id == id);
+    return ElfSymbolBinding.values.firstWhere((x) => x.id == id,
+        orElse: () => throw ElfFormatException('Unknown symbol binding $id'));
   }
 }
 
@@ -502,9 +542,11 @@ enum ElfSectionHeaderFlags {
 
   /// Finds a flag given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfSectionHeaderFlags byId(int id) {
-    return ElfSectionHeaderFlags.values.firstWhere((x) => x.id == id);
+    return ElfSectionHeaderFlags.values.firstWhere((x) => x.id == id,
+        orElse: () =>
+            throw ElfFormatException('Unknown section header flag $id'));
   }
 }
 
@@ -532,7 +574,7 @@ enum ElfSymbolType {
 
   /// Finds a symbol type given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfSymbolType byId(int id) {
     for (ElfSymbolType type in ElfSymbolType.values) {
       if (type.id == id) return type;
@@ -543,7 +585,7 @@ enum ElfSymbolType {
     if (id >= ElfSymbolType.loproc.id && id <= ElfSymbolType.hiproc.id) {
       return ElfSymbolType.loproc;
     }
-    throw StateError('Unknown symbol type $id');
+    throw ElfFormatException('Unknown symbol type $id');
   }
 }
 
@@ -561,9 +603,11 @@ enum ElfSymbolVisibility {
 
   /// Finds a symbol type given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfSymbolVisibility byId(int id) {
-    return ElfSymbolVisibility.values.firstWhere((x) => x.id == id);
+    return ElfSymbolVisibility.values.firstWhere((x) => x.id == id,
+        orElse: () =>
+            throw ElfFormatException('Unknown symbol visibility $id'));
   }
 }
 
@@ -583,12 +627,13 @@ enum ElfNoteType {
 
   /// Finds a note type given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfNoteType byId(int id) {
     if (id == 0 || id > 5) {
       return ElfNoteType.unknown;
     }
-    return ElfNoteType.values.firstWhere((x) => x.id == id);
+    return ElfNoteType.values.firstWhere((x) => x.id == id,
+        orElse: () => throw ElfFormatException('Unknown note type $id'));
   }
 }
 
@@ -597,50 +642,51 @@ enum ElfNoteType {
 /// These are architecture specific
 enum ElfRelocationType {
   unknown(ElfArchitectureIdentifier.none, 0, 'UNKNOWN'),
-  ia64NONE(ElfArchitectureIdentifier.ia64, 0, 'R_X86_64_NONE'),
-  ia6464(ElfArchitectureIdentifier.ia64, 1, 'R_X86_64_64'),
-  ia64PC32(ElfArchitectureIdentifier.ia64, 2, 'R_X86_64_PC32'),
-  ia64(ElfArchitectureIdentifier.ia64, 3, 'R_X86_64_GOT32'),
-  ia64GOT32(ElfArchitectureIdentifier.ia64, 4, 'R_X86_64_PLT32'),
-  ia64COPY(ElfArchitectureIdentifier.ia64, 5, 'R_X86_64_COPY'),
-  ia64GLOB_DAT(ElfArchitectureIdentifier.ia64, 6, 'R_X86_64_GLOB_DAT'),
-  ia64JUMP_SLOT(ElfArchitectureIdentifier.ia64, 7, 'R_X86_64_JUMP_SLOT'),
-  ia64RELATIVE(ElfArchitectureIdentifier.ia64, 8, 'R_X86_64_RELATIVE'),
-  ia64GOTPCREL(ElfArchitectureIdentifier.ia64, 9, 'R_X86_64_GOTPCREL'),
-  ia6432(ElfArchitectureIdentifier.ia64, 10, 'R_X86_64_32'),
-  ia6432S(ElfArchitectureIdentifier.ia64, 11, 'R_X86_64_32S'),
-  ia6416(ElfArchitectureIdentifier.ia64, 12, 'R_X86_64_16'),
-  ia64PC16(ElfArchitectureIdentifier.ia64, 13, 'R_X86_64_PC16'),
-  ia648(ElfArchitectureIdentifier.ia64, 14, 'R_X86_64_8'),
-  ia64PC8(ElfArchitectureIdentifier.ia64, 15, 'R_X86_64_PC8'),
-  ia64DTPMOD64(ElfArchitectureIdentifier.ia64, 16, 'R_X86_64_DTPMOD64'),
-  ia64DTPOFF64(ElfArchitectureIdentifier.ia64, 17, 'R_X86_64_DTPOFF64'),
-  ia64TPOFF64(ElfArchitectureIdentifier.ia64, 18, 'R_X86_64_TPOFF64'),
-  ia64TLSGD(ElfArchitectureIdentifier.ia64, 19, 'R_X86_64_TLSGD'),
-  ia64TLSLD(ElfArchitectureIdentifier.ia64, 20, 'R_X86_64_TLSLD'),
-  ia64DTPOFF32(ElfArchitectureIdentifier.ia64, 21, 'R_X86_64_DTPOFF32'),
-  ia64GOTTPOFF(ElfArchitectureIdentifier.ia64, 22, 'R_X86_64_GOTTPOFF'),
-  ia64TPOFF32(ElfArchitectureIdentifier.ia64, 23, 'R_X86_64_TPOFF32'),
-  ia64PC64(ElfArchitectureIdentifier.ia64, 24, 'R_X86_64_PC64'),
-  ia64GOTOFF64(ElfArchitectureIdentifier.ia64, 25, 'R_X86_64_GOTOFF64'),
-  ia64GOTPC32(ElfArchitectureIdentifier.ia64, 26, 'R_X86_64_GOTPC32'),
-  ia64GOT64(ElfArchitectureIdentifier.ia64, 27, 'R_X86_64_GOT64'),
-  ia64GOTPCREL64(ElfArchitectureIdentifier.ia64, 28, 'R_X86_64_GOTPCREL64'),
-  ia64GOTPC64(ElfArchitectureIdentifier.ia64, 29, 'R_X86_64_GOTPC64'),
-  ia64GOTPLT64(ElfArchitectureIdentifier.ia64, 30, 'R_X86_64_GOTPLT64'),
-  ia64PLTOFF64(ElfArchitectureIdentifier.ia64, 31, 'R_X86_64_PLTOFF64'),
-  ia64SIZE32(ElfArchitectureIdentifier.ia64, 32, 'R_X86_64_SIZE32'),
-  ia64SIZE64(ElfArchitectureIdentifier.ia64, 33, 'R_X86_64_SIZE64'),
-  ia64GOTPC32TLSDESC(
-      ElfArchitectureIdentifier.ia64, 34, 'R_X86_64_GOTPC32_TLSDESC'),
-  ia64TLSDESCCALL(ElfArchitectureIdentifier.ia64, 35, 'R_X86_64_TLSDESC_CALL'),
-  ia64TLSDESC(ElfArchitectureIdentifier.ia64, 36, 'R_X86_64_TLSDESC'),
-  ia64IRELATIVE(ElfArchitectureIdentifier.ia64, 37, 'R_X86_64_IRELATIVE'),
-  ia64RELATIVE64(ElfArchitectureIdentifier.ia64, 38, 'R_X86_64_RELATIVE64'),
-  ia64GOTPCRELX(ElfArchitectureIdentifier.ia64, 41, 'R_X86_64_GOTPCRELX'),
-  ia64REXGOTPCRELX(
-      ElfArchitectureIdentifier.ia64, 42, 'R_X86_64_REX_GOTPCRELX'),
-  ia64NUM(ElfArchitectureIdentifier.ia64, 43, 'R_X86_64_NUM'),
+  x8664NONE(ElfArchitectureIdentifier.x8664, 0, 'R_X86_64_NONE'),
+  x866464(ElfArchitectureIdentifier.x8664, 1, 'R_X86_64_64'),
+  x8664PC32(ElfArchitectureIdentifier.x8664, 2, 'R_X86_64_PC32'),
+  x8664GOT32(ElfArchitectureIdentifier.x8664, 3, 'R_X86_64_GOT32'),
+  x8664PLT32(ElfArchitectureIdentifier.x8664, 4, 'R_X86_64_PLT32'),
+  x8664COPY(ElfArchitectureIdentifier.x8664, 5, 'R_X86_64_COPY'),
+  x8664GLOB_DAT(ElfArchitectureIdentifier.x8664, 6, 'R_X86_64_GLOB_DAT'),
+  x8664JUMP_SLOT(ElfArchitectureIdentifier.x8664, 7, 'R_X86_64_JUMP_SLOT'),
+  x8664RELATIVE(ElfArchitectureIdentifier.x8664, 8, 'R_X86_64_RELATIVE'),
+  x8664GOTPCREL(ElfArchitectureIdentifier.x8664, 9, 'R_X86_64_GOTPCREL'),
+  x866432(ElfArchitectureIdentifier.x8664, 10, 'R_X86_64_32'),
+  x866432S(ElfArchitectureIdentifier.x8664, 11, 'R_X86_64_32S'),
+  x866416(ElfArchitectureIdentifier.x8664, 12, 'R_X86_64_16'),
+  x8664PC16(ElfArchitectureIdentifier.x8664, 13, 'R_X86_64_PC16'),
+  x86648(ElfArchitectureIdentifier.x8664, 14, 'R_X86_64_8'),
+  x8664PC8(ElfArchitectureIdentifier.x8664, 15, 'R_X86_64_PC8'),
+  x8664DTPMOD64(ElfArchitectureIdentifier.x8664, 16, 'R_X86_64_DTPMOD64'),
+  x8664DTPOFF64(ElfArchitectureIdentifier.x8664, 17, 'R_X86_64_DTPOFF64'),
+  x8664TPOFF64(ElfArchitectureIdentifier.x8664, 18, 'R_X86_64_TPOFF64'),
+  x8664TLSGD(ElfArchitectureIdentifier.x8664, 19, 'R_X86_64_TLSGD'),
+  x8664TLSLD(ElfArchitectureIdentifier.x8664, 20, 'R_X86_64_TLSLD'),
+  x8664DTPOFF32(ElfArchitectureIdentifier.x8664, 21, 'R_X86_64_DTPOFF32'),
+  x8664GOTTPOFF(ElfArchitectureIdentifier.x8664, 22, 'R_X86_64_GOTTPOFF'),
+  x8664TPOFF32(ElfArchitectureIdentifier.x8664, 23, 'R_X86_64_TPOFF32'),
+  x8664PC64(ElfArchitectureIdentifier.x8664, 24, 'R_X86_64_PC64'),
+  x8664GOTOFF64(ElfArchitectureIdentifier.x8664, 25, 'R_X86_64_GOTOFF64'),
+  x8664GOTPC32(ElfArchitectureIdentifier.x8664, 26, 'R_X86_64_GOTPC32'),
+  x8664GOT64(ElfArchitectureIdentifier.x8664, 27, 'R_X86_64_GOT64'),
+  x8664GOTPCREL64(ElfArchitectureIdentifier.x8664, 28, 'R_X86_64_GOTPCREL64'),
+  x8664GOTPC64(ElfArchitectureIdentifier.x8664, 29, 'R_X86_64_GOTPC64'),
+  x8664GOTPLT64(ElfArchitectureIdentifier.x8664, 30, 'R_X86_64_GOTPLT64'),
+  x8664PLTOFF64(ElfArchitectureIdentifier.x8664, 31, 'R_X86_64_PLTOFF64'),
+  x8664SIZE32(ElfArchitectureIdentifier.x8664, 32, 'R_X86_64_SIZE32'),
+  x8664SIZE64(ElfArchitectureIdentifier.x8664, 33, 'R_X86_64_SIZE64'),
+  x8664GOTPC32_TLSDESC(
+      ElfArchitectureIdentifier.x8664, 34, 'R_X86_64_GOTPC32_TLSDESC'),
+  x8664TLSDESC_CALL(
+      ElfArchitectureIdentifier.x8664, 35, 'R_X86_64_TLSDESC_CALL'),
+  x8664TLSDESC(ElfArchitectureIdentifier.x8664, 36, 'R_X86_64_TLSDESC'),
+  x8664IRELATIVE(ElfArchitectureIdentifier.x8664, 37, 'R_X86_64_IRELATIVE'),
+  x8664RELATIVE64(ElfArchitectureIdentifier.x8664, 38, 'R_X86_64_RELATIVE64'),
+  x8664GOTPCRELX(ElfArchitectureIdentifier.x8664, 41, 'R_X86_64_GOTPCRELX'),
+  x8664REX_GOTPCRELX(
+      ElfArchitectureIdentifier.x8664, 42, 'R_X86_64_REX_GOTPCRELX'),
+  x8664NUM(ElfArchitectureIdentifier.x8664, 43, 'R_X86_64_NUM'),
 
   // ARM relocation types
   armNone(ElfArchitectureIdentifier.arm, 0, 'R_ARM_NONE'),
@@ -666,6 +712,91 @@ enum ElfRelocationType {
   armTHMMOVWPRELNC(ElfArchitectureIdentifier.arm, 49, 'R_ARM_THM_MOVW_PREL_NC'),
   armTHMMOVTPREL(ElfArchitectureIdentifier.arm, 50, 'R_ARM_THM_MOVT_PREL');
 
+  @Deprecated('Use x8664NONE')
+  static const ElfRelocationType ia64NONE = x8664NONE;
+  @Deprecated('Use x866464')
+  static const ElfRelocationType ia6464 = x866464;
+  @Deprecated('Use x8664PC32')
+  static const ElfRelocationType ia64PC32 = x8664PC32;
+  @Deprecated('Use x8664GOT32')
+  static const ElfRelocationType ia64 = x8664GOT32;
+  @Deprecated('Use x8664PLT32')
+  static const ElfRelocationType ia64GOT32 = x8664PLT32;
+  @Deprecated('Use x8664COPY')
+  static const ElfRelocationType ia64COPY = x8664COPY;
+  @Deprecated('Use x8664GLOB_DAT')
+  static const ElfRelocationType ia64GLOB_DAT = x8664GLOB_DAT;
+  @Deprecated('Use x8664JUMP_SLOT')
+  static const ElfRelocationType ia64JUMP_SLOT = x8664JUMP_SLOT;
+  @Deprecated('Use x8664RELATIVE')
+  static const ElfRelocationType ia64RELATIVE = x8664RELATIVE;
+  @Deprecated('Use x8664GOTPCREL')
+  static const ElfRelocationType ia64GOTPCREL = x8664GOTPCREL;
+  @Deprecated('Use x866432')
+  static const ElfRelocationType ia6432 = x866432;
+  @Deprecated('Use x866432S')
+  static const ElfRelocationType ia6432S = x866432S;
+  @Deprecated('Use x866416')
+  static const ElfRelocationType ia6416 = x866416;
+  @Deprecated('Use x8664PC16')
+  static const ElfRelocationType ia64PC16 = x8664PC16;
+  @Deprecated('Use x86648')
+  static const ElfRelocationType ia648 = x86648;
+  @Deprecated('Use x8664PC8')
+  static const ElfRelocationType ia64PC8 = x8664PC8;
+  @Deprecated('Use x8664DTPMOD64')
+  static const ElfRelocationType ia64DTPMOD64 = x8664DTPMOD64;
+  @Deprecated('Use x8664DTPOFF64')
+  static const ElfRelocationType ia64DTPOFF64 = x8664DTPOFF64;
+  @Deprecated('Use x8664TPOFF64')
+  static const ElfRelocationType ia64TPOFF64 = x8664TPOFF64;
+  @Deprecated('Use x8664TLSGD')
+  static const ElfRelocationType ia64TLSGD = x8664TLSGD;
+  @Deprecated('Use x8664TLSLD')
+  static const ElfRelocationType ia64TLSLD = x8664TLSLD;
+  @Deprecated('Use x8664DTPOFF32')
+  static const ElfRelocationType ia64DTPOFF32 = x8664DTPOFF32;
+  @Deprecated('Use x8664GOTTPOFF')
+  static const ElfRelocationType ia64GOTTPOFF = x8664GOTTPOFF;
+  @Deprecated('Use x8664TPOFF32')
+  static const ElfRelocationType ia64TPOFF32 = x8664TPOFF32;
+  @Deprecated('Use x8664PC64')
+  static const ElfRelocationType ia64PC64 = x8664PC64;
+  @Deprecated('Use x8664GOTOFF64')
+  static const ElfRelocationType ia64GOTOFF64 = x8664GOTOFF64;
+  @Deprecated('Use x8664GOTPC32')
+  static const ElfRelocationType ia64GOTPC32 = x8664GOTPC32;
+  @Deprecated('Use x8664GOT64')
+  static const ElfRelocationType ia64GOT64 = x8664GOT64;
+  @Deprecated('Use x8664GOTPCREL64')
+  static const ElfRelocationType ia64GOTPCREL64 = x8664GOTPCREL64;
+  @Deprecated('Use x8664GOTPC64')
+  static const ElfRelocationType ia64GOTPC64 = x8664GOTPC64;
+  @Deprecated('Use x8664GOTPLT64')
+  static const ElfRelocationType ia64GOTPLT64 = x8664GOTPLT64;
+  @Deprecated('Use x8664PLTOFF64')
+  static const ElfRelocationType ia64PLTOFF64 = x8664PLTOFF64;
+  @Deprecated('Use x8664SIZE32')
+  static const ElfRelocationType ia64SIZE32 = x8664SIZE32;
+  @Deprecated('Use x8664SIZE64')
+  static const ElfRelocationType ia64SIZE64 = x8664SIZE64;
+  @Deprecated('Use x8664GOTPC32_TLSDESC')
+  static const ElfRelocationType ia64GOTPC32TLSDESC = x8664GOTPC32_TLSDESC;
+  @Deprecated('Use x8664TLSDESC_CALL')
+  static const ElfRelocationType ia64TLSDESCCALL = x8664TLSDESC_CALL;
+  @Deprecated('Use x8664TLSDESC')
+  static const ElfRelocationType ia64TLSDESC = x8664TLSDESC;
+  @Deprecated('Use x8664IRELATIVE')
+  static const ElfRelocationType ia64IRELATIVE = x8664IRELATIVE;
+  @Deprecated('Use x8664RELATIVE64')
+  static const ElfRelocationType ia64RELATIVE64 = x8664RELATIVE64;
+  @Deprecated('Use x8664GOTPCRELX')
+  static const ElfRelocationType ia64GOTPCRELX = x8664GOTPCRELX;
+  @Deprecated('Use x8664REX_GOTPCRELX')
+  static const ElfRelocationType ia64REXGOTPCRELX = x8664REX_GOTPCRELX;
+  @Deprecated('Use x8664NUM')
+  static const ElfRelocationType ia64NUM = x8664NUM;
+
   final int id;
   final String name;
   final ElfArchitectureIdentifier arch;
@@ -674,7 +805,7 @@ enum ElfRelocationType {
 
   /// Finds a relocation type given [arch] and an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfRelocationType byArchitecture(
       ElfArchitectureIdentifier arch, int id) {
     for (ElfRelocationType type in ElfRelocationType.values) {
@@ -685,7 +816,7 @@ enum ElfRelocationType {
 
   /// Finds a relocation type given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfRelocationType byId(int id) {
     for (ElfRelocationType type in ElfRelocationType.values) {
       if (type.id == id) return type;
@@ -750,14 +881,14 @@ enum ElfDynamicTag {
 
   /// Finds a dynamic tag given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfDynamicTag byId(int id) {
     for (ElfDynamicTag type in ElfDynamicTag.values) {
       if (type.id == id) return type;
     }
     if (id >= 0x60000000 && id <= 0x6fffffff) return ElfDynamicTag.os;
     if (id >= 0x70000000 && id <= 0x7fffffff) return ElfDynamicTag.processor;
-    throw StateError('Unknown dynamic tag $id');
+    throw ElfFormatException('Unknown dynamic tag $id');
   }
 }
 
@@ -804,12 +935,12 @@ enum ElfDynamicFlags {
 
   /// Finds a dynamic flag given an [id].
   ///
-  /// Throws a [StateError] if the id could not be found.
+  /// Throws an [ElfFormatException] if the id could not be found.
   static ElfDynamicFlags byId(int id) {
     for (ElfDynamicFlags type in ElfDynamicFlags.values) {
       if (type.id == id) return type;
     }
-    throw StateError('Unknown dynamic flag $id');
+    throw ElfFormatException('Unknown dynamic flag $id');
   }
 
   // Check to see if a [flag] is set in [i]

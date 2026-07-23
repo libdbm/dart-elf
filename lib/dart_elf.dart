@@ -3,6 +3,7 @@ library;
 
 export 'src/elf_base.dart';
 export 'src/elf_dynamic_section.dart';
+export 'src/elf_format_exception.dart';
 export 'src/elf_gnu_hash_table_section.dart';
 export 'src/elf_gnu_verdef_section.dart';
 export 'src/elf_gnu_verneed_section.dart';

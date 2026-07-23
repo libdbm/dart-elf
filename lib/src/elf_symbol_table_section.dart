@@ -2,12 +2,23 @@ import '../dart_elf.dart';
 
 /// A section containing a symbol table
 class ElfSymbolTableSection extends ElfSection {
+  List<ElfSymbol>? _symbols;
+
   ElfSymbolTableSection(super._meta, super._header, super._name, super._buffer);
 
   /// Get the possibly empty list of symbols in this section
-  List<ElfSymbol> get symbols => _getSymbols();
+  ///
+  /// The table is parsed once on first access and cached. Repeated reads are
+  /// common, and reparsing on each one makes indexed access quadratic.
+  List<ElfSymbol> get symbols => _symbols ??= List.unmodifiable(_getSymbols());
 
   List<ElfSymbol> _getSymbols() {
+    final int minimum = meta.word == ElfWordSize.word32Bit ? 16 : 24;
+    if (header.entsize < minimum) {
+      throw ElfFormatException(
+          'Symbol table entry size ${header.entsize} is below the minimum $minimum',
+          offset: header.offset);
+    }
     List<ElfSymbol> ret = [];
     int count = (header.size ~/ header.entsize);
     for (int i = 0; i < count; i++) {

@@ -19,7 +19,12 @@ class ElfSection {
   ElfSectionHeader get header => _header;
 
   /// Get the ELF section type
-  ElfSectionType get type => ElfSectionType.byId(_header.type);
+  ///
+  /// Resolved against the file's architecture, so this agrees with the type
+  /// the reader used to decide which section class to build. Several type ids
+  /// are reused by different vendors.
+  ElfSectionType get type =>
+      ElfSectionType.byArchitecture(_meta.arch, _header.type);
 
   /// Get the IO buffer used to parse the section
   ElfIoBuffer get buffer => _buffer;

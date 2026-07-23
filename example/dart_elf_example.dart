@@ -29,7 +29,16 @@ void main(List<String> arguments) {
     exit(-1);
   }
 
-  ElfReader reader = ElfReader.fromRandomAccessFile(file.openSync());
+  ElfReader reader = ElfReader.fromFile(file);
+  try {
+    _dump(reader, args);
+  } finally {
+    reader.close();
+  }
+  exit(0);
+}
+
+void _dump(ElfReader reader, ArgResults args) {
   bool fileHeader = args['all'] || args['file-header'];
   bool sectionHeaders = args['all'] || args['section-headers'];
   bool programHeaders = args['all'] || args['program-headers'];
@@ -45,7 +54,7 @@ void main(List<String> arguments) {
   if (programHeaders) {
     _printProgramHeaders(reader);
   }
-  if (programHeaders && reader.header.shnum > 0) {
+  if (programHeaders && reader.sections.isNotEmpty) {
     _printSectionToSegmentMapping(reader);
   }
   if (sectionHeaders) {
@@ -68,7 +77,6 @@ void main(List<String> arguments) {
       }
     }
   }
-  exit(0);
 }
 
 void _printNotes(ElfReader reader, ElfNoteSection section) {
@@ -105,15 +113,16 @@ void _printNotes(ElfReader reader, ElfNoteSection section) {
 }
 
 void _printSymbolTable(ElfReader reader, ElfSymbolTableSection section) {
+  final symbols = section.symbols;
   print(sprintf('Symbol table \'%s\' contains %d entries:',
-      [section.name, section.symbols.length]));
+      [section.name, symbols.length]));
 
   print('   Num:    Value  Size Type         Bind    Vis         Ndx  Name');
   ElfStringTable stringTable = section.name == '.dynsym'
       ? reader.dynamicStringTable!
       : reader.stringTable!;
-  for (var i = 0; i < section.symbols.length; i++) {
-    var symbol = section.symbols[i];
+  for (var i = 0; i < symbols.length; i++) {
+    var symbol = symbols[i];
     print(sprintf('%6d: %08x %5d %-12.12s %-7.7s %-8.8s %6d     %s', [
       i,
       symbol.value,
@@ -135,16 +144,22 @@ void _printRelocationSections(ElfReader reader) {
           'Relocation section \'%s\' at offset %#0x contains %d entries:',
           [section.name, section.header.offset, section.entries.length]));
       print('Offset    Info      Type             Value     Name');
-      ElfSymbolTableSection? symbolTable = reader.dynamicSymbolTableSection;
+      // Hoisted: both are derived from the whole section, and reading them per
+      // entry would rescan the symbol table for every relocation.
+      final symbols = reader.dynamicSymbolTableSection?.symbols;
+      final strings = reader.dynamicStringTable;
       for (ElfRelocation h in section.entries) {
         var tid = _getRelocationType(reader.header, h.info);
         var idx = _getRelocationIndex(reader.header, h.info);
         var type = ElfRelocationType.byArchitecture(reader.header.arch, tid);
-        var binding = symbolTable?.symbols[idx];
+        // The symbol index comes from the relocation, so it is not trusted.
+        var binding = symbols != null && idx >= 0 && idx < symbols.length
+            ? symbols[idx]
+            : null;
         var value = binding?.value ?? -1;
         var nindex = binding?.nindex ?? -1;
         var addend = h.addend != null ? '+ ${h.addend!.toRadixString(10)}' : '';
-        var name = reader.dynamicStringTable?.at(nindex) ?? '-';
+        var name = nindex >= 0 ? strings?.at(nindex) ?? '-' : '-';
         print(sprintf('%08x  %08x  %-15.15s  %08x  %s %s',
             [h.offset, h.info, type.name, value, name, addend]));
       }
@@ -165,17 +180,23 @@ void _printDynamicSections(ElfReader reader) {
   for (var section in reader.sections) {
     if (section is ElfDynamicSection) {
       int stringTableSize = 0;
+      int? stringTableAddress;
       ElfStringTable? stringTable;
 
-      // first try to load the string table for the dynamic section
+      // first try to load the string table for the dynamic section. Both
+      // entries have to be collected before the table can be built, since
+      // DT_STRTAB usually precedes DT_STRSZ.
       for (ElfDynamicEntry entry in section.entries) {
         if (entry.tag == ElfDynamicTag.strsz.id) {
           stringTableSize = entry.value;
         }
         if (entry.tag == ElfDynamicTag.strtab.id) {
-          int offset = reader.toFileOffset(entry.value);
-          stringTable = ElfStringTable(reader.buffer, offset, stringTableSize);
+          stringTableAddress = entry.value;
         }
+      }
+      if (stringTableAddress != null && stringTableSize > 0) {
+        int offset = reader.toFileOffset(stringTableAddress);
+        stringTable = ElfStringTable(reader.buffer, offset, stringTableSize);
       }
       print(sprintf('Dynamic section at offset %#x contains %d entries:',
           [section.header.offset, section.entries.length]));

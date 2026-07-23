@@ -1,3 +1,4 @@
+import 'package:dart_elf/src/elf_format_exception.dart';
 import 'package:dart_elf/src/elf_io_buffer.dart';
 
 /// An ELF string table that is created from section data.
@@ -12,14 +13,28 @@ class ElfStringTable {
   ElfStringTable(this._buffer, this.offset, this.size);
 
   /// Get a string at offset [off] within the table.
+  ///
+  /// The ABI requires a string and its terminating null to lie inside the
+  /// table, so the scan is bounded by [size] rather than running to the end of
+  /// the file. Throws an [ElfFormatException] when [off] falls outside the
+  /// table or the string is unterminated.
   String at(int off) {
-    _buffer.seek(offset + off, absolute: true);
-    List<int> bytes = [];
-    int byte = _buffer.readByte();
-    while (byte != 0 && byte != -1) {
-      bytes.add(byte);
-      byte = _buffer.readByte();
+    if (off < 0 || off >= size) {
+      throw ElfFormatException(
+          'String offset $off is outside the $size byte string table',
+          offset: offset + off);
     }
-    return String.fromCharCodes(bytes);
+    _buffer.seek(offset + off, absolute: true);
+    final int limit = offset + size;
+    final List<int> bytes = [];
+    while (_buffer.offset < limit) {
+      final int byte = _buffer.readByte();
+      if (byte < 0) break;
+      if (byte == 0) return String.fromCharCodes(bytes);
+      bytes.add(byte);
+    }
+    throw ElfFormatException(
+        'Unterminated string at offset $off in string table',
+        offset: offset + off);
   }
 }

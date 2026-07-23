@@ -17,6 +17,14 @@ class ElfRelocationSection extends ElfSection {
 
   static List<ElfRelocation> _parseEntries(ElfFileHeader meta,
       ElfSectionHeader header, ElfIoBuffer buffer, bool hasAddends) {
+    final int minimum = meta.word == ElfWordSize.word32Bit
+        ? (hasAddends ? 12 : 8)
+        : (hasAddends ? 24 : 16);
+    if (header.entsize < minimum) {
+      throw ElfFormatException(
+          'Relocation entry size ${header.entsize} is below the minimum $minimum',
+          offset: header.offset);
+    }
     List<ElfRelocation> ret = [];
     buffer.seek(header.offset, absolute: true);
     for (int i = 0; i < header.size ~/ header.entsize; i++) {
@@ -34,14 +42,22 @@ class ElfRelocationSection extends ElfSection {
       return (
         offset: buffer.readInt(meta.endian),
         info: buffer.readInt(meta.endian),
-        addend: hasAddend ? buffer.readInt(meta.endian) : null
+        addend: hasAddend ? _signed(buffer.readInt(meta.endian)) : null
       );
     }
 
+    // A 64 bit addend needs no conversion. readLong shifts the top byte into
+    // the sign bit of a Dart int, which is already 64 bit two's complement.
     return (
       offset: buffer.readLong(meta.endian),
       info: buffer.readLong(meta.endian),
       addend: hasAddend ? buffer.readLong(meta.endian) : null
     );
+  }
+
+  /// Reinterpret an unsigned 32 bit read as the signed Elf32_Sword the ABI
+  /// defines r_addend to be
+  static int _signed(final int value) {
+    return (value & 0x80000000) != 0 ? value - 0x100000000 : value;
   }
 }
